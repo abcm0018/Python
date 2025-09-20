@@ -1,35 +1,77 @@
+import logging
 from api.auth import login_user
-from api.palets import scan_palet
+from api.users import get_all_users_public_service, get_all_users_protected_service
+from scanner.scanner import start_scanner
 
-if __name__ == "__main__":
-    # Pedir las credenciales por consola
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+def menu_principal():
+    print("\n=== MENÚ PRINCIPAL ===")
+    print("1. Login")
+    print("2. Ver usuarios públicos")
+    print("3. Salir")
+    return input("Elige una opción: ")
+
+def menu_post_login(user):
+    print(f"\n=== MENÚ USUARIO ({user['name']}) ===")
+    print("1. Escanear palet")
+    print("2. Ver usuarios protegidos")
+    print("3. Volver al menú principal")
+    return input("Elige una opción: ")
+
+def login():
     employeeNumber = input("Introduce tu número de empleado: ")
     password = input("Introduce tu contraseña: ")
-
     try:
-
-        # Login
         data = login_user(employeeNumber, password)
         token = data["token"]
-        refreshToken = data["refresh_token"]
         user = data["user"]
-
-        print("\n✅ Login exitoso")
-        print("Token: ", token)
-        print("Refresh token: ", refreshToken)
-        print("\n👤 Datos del usuario:", user)
-
-        opcion = input("\n¿Quieres escanear un palet? (s/n): ")
-        if opcion.lower() == "s":
-            ean = input("EAN: ")
-            batchNumber = input("Lote: ")
-            productUseByDate = input("Fecha caducidad (GS1): ")
-            packagingDate = input("Fecha producción (GS1): ")
-            time = input("Hora (GS1): ")
-            sscc = input("SSCC: ")
-
-            scan_palet(ean, batchNumber, productUseByDate, packagingDate, time, sscc, employeeNumber)
-
+        logging.info("✅ Login exitoso")
+        logging.info(f"Token: {token}")
+        logging.info(f"👤 Datos del usuario: {user}")
+        return user
     except Exception as e:
-        print("❌ Error al iniciar sesión:", str(e))
+        logging.error(f"❌ Error al iniciar sesión: {str(e)}")
+        return None
 
+def ver_usuarios_publicos():
+    users = get_all_users_public_service()
+    logging.info(f"🌐 Usuarios públicos: {users}")
+
+def ver_usuarios_protegidos(user):
+    users = get_all_users_protected_service(user["employee_number"])
+    logging.info(f"🔒 Usuarios protegidos: {users}")
+
+def escanear_palet(user):
+    logging.info(f"📷 Iniciando escáner para {user['name']} {user['surname']}...")
+    start_scanner(user["employee_number"])
+
+# Bucle principal
+if __name__ == "__main__":
+    user_logueado = None
+    while True:
+        if not user_logueado:
+            opcion = menu_principal()
+            if opcion == "1":
+                user_logueado = login()
+            elif opcion == "2":
+                ver_usuarios_publicos()
+            elif opcion == "3":
+                print("Adiós!")
+                break
+            else:
+                print("Opción no válida")
+        else:
+            opcion = menu_post_login(user_logueado)
+            if opcion == "1":
+                escanear_palet(user_logueado)
+            elif opcion == "2":
+                ver_usuarios_protegidos(user_logueado)
+            elif opcion == "3":
+                user_logueado = None  # Volver al menú principal
+            else:
+                print("Opción no válida")

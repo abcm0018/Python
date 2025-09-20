@@ -3,38 +3,18 @@ from pyzbar.pyzbar import decode
 from datetime import datetime
 from collections import defaultdict
 
-from paletinfoscan.paletInfoScan import save_barcode_db
-from api.palets import save_palet_db
+from api.palets import scan_palet, scan_barcode
 from utils.utils import formatear_fecha_gs1_a_java, formatear_hora_gs1_a_java, determinar_turno
+from constants.constants import TIPOS_CODIGOS, AIs
 
-# Número de empleado fijo (puedes cambiarlo cuando tengas login de usuario)
-EMPLOYEE_NUMBER = "12345"
+import logging
 
-# Tipos de códigos
-TIPOS_CODIGOS = {
-    "QRCODE": "Código QR",
-    "CODE128": "Code 128",
-    "CODE39": "Code 39",
-    "EAN13": "EAN-13",
-    "EAN8": "EAN-8",
-    "UPCA": "UPC-A",
-    "UPCE": "UPC-E",
-    "PDF417": "PDF417",
-    "DATAMATRIX": "DataMatrix",
-    "ITF": "ITF (Interleaved 2 of 5)",
-    "AZTEC": "Aztec",
-    "CODABAR": "Codabar"
-}
-
-# Identificadores de aplicación GS1
-AIs = {
-    "00": {"nombre": "SSCC", "longitud": 18, "tipo": "sscc"},
-    "01": {"nombre": "EAN", "longitud": 14, "tipo": "ean"},
-    "10": {"nombre": "LOTE", "longitud": -1, "tipo": "lote"},
-    "15": {"nombre": "FECHA CONSUMO", "longitud": 6, "tipo": "fecha_preferente_consumo"},
-    "17": {"nombre": "FECHA CADUCIDAD", "longitud": 6, "tipo": "fecha_caducidad"},
-    "8008": {"nombre": "FECHA Y HORA PRODUCCIÓN", "longitud": 10, "tipo": "fecha_hora_produccion"}
-}
+# Configuración básica de logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 # Diccionarios de control
 seen_barcodes = {}  # para evitar duplicados
@@ -85,29 +65,29 @@ def procesar_gs1(codigo):
 
             if tipo_dato == "sscc" and label_data["sscc"] is None:
                 label_data["sscc"] = valor
-                print(f"✓ SSCC detectado: {valor}")
+                logging.info(f"✓ SSCC detectado: {valor}")
                 actualizado = True
             elif tipo_dato == "ean" and label_data["ean"] is None:
                 label_data["ean"] = valor
-                print(f"✓ EAN detectado: {valor}")
+                logging.info(f"✓ EAN detectado: {valor}")
                 actualizado = True
             elif tipo_dato == "lote" and label_data["batchNumber"] is None:
                 label_data["batchNumber"] = valor
-                print(f"✓ Lote detectado: {valor}")
+                logging.info(f"✓ Lote detectado: {valor}")
                 actualizado = True
             elif tipo_dato == "fecha_preferente_consumo" and label_data["productUseByDate"] is None:
                 label_data["productUseByDate"] = valor
-                print(f"✓ Fecha consumo: {valor}")
+                logging.info(f"✓ Fecha consumo: {valor}")
                 actualizado = True
             elif tipo_dato == "fecha_hora_produccion":
                 if len(valor) >= 10:
                     if label_data["packagingDate"] is None:
                         label_data["packagingDate"] = valor[:6]
-                        print(f"✓ Fecha producción: {valor[:6]}")
+                        logging.info(f"✓ Fecha producción: {valor[:6]}")
                         actualizado = True
                     if label_data["time"] is None:
                         label_data["time"] = valor[6:10]
-                        print(f"✓ Hora producción: {valor[6:10]}")
+                        logging.info(f"✓ Hora producción: {valor[6:10]}")
                         actualizado = True
         else:
             i += 1
@@ -152,12 +132,12 @@ def start_scanner(employeeNumber):
                 }
                 unique_codes_for_summary[data] = seen_barcodes[data]
 
-                print(f"\nNuevo código detectado: {data}")
-                print(f"Tipo: {barcode_type} ({obtener_descripcion_tipo(barcode_type)})")
-                print(f"Fecha y hora: {timestamp}")
+                logging.info(f"Nuevo código detectado: {data}")
+                logging.info(f"Tipo: {barcode_type} ({obtener_descripcion_tipo(barcode_type)})")
+                logging.info(f"Fecha y hora: {timestamp}")
 
                 # Guardar en PALET_INFO_SCAN
-                save_barcode_db(
+                scan_barcode(
                     value=data,
                     type=barcode_type,
                     description_type=TIPOS_CODIGOS.get(barcode_type, barcode_type),
@@ -167,10 +147,10 @@ def start_scanner(employeeNumber):
                 # Procesar GS1
                 procesar_gs1(data)
 
-                print("Estado actual de datos capturados:")
+                logging.info("Estado actual de datos capturados:")                
                 for key, value in label_data.items():
                     estado = "✓" if value else "❌"
-                    print(f"{key}: {estado} {value if value else ''}")
+                    logging.info(f"{key}: {estado} {value if value else ''}")
 
                 # Consolidar y guardar si está completo
                 if label_data["ean"] is not None:
@@ -180,7 +160,7 @@ def start_scanner(employeeNumber):
                     completado = all(key in etiquetas_detectadas[ean] or (key == "ean" and ean) for key in datos_requeridos)
 
                     if completado:
-                        print(f"\n=== PALET {ean} COMPLETO ===")
+                        logging.info(f"=== PALET {ean} COMPLETO ===")
                         fecha_consumo = etiquetas_detectadas[ean].get("productUseByDate")
                         fecha_produccion = etiquetas_detectadas[ean].get("packagingDate")
                         hora_produccion = etiquetas_detectadas[ean].get("time")
@@ -188,24 +168,25 @@ def start_scanner(employeeNumber):
 
                         turno_test = determinar_turno(formatear_hora_gs1_a_java(hora_produccion))
 
-                        print(f"EAN: {ean}")
-                        print(f"LOTE: {etiquetas_detectadas[ean].get('batchNumber')}")
-                        print(f"FECHA CONSUMO: {fecha_consumo}")
-                        print(f"FECHA PRODUCCIÓN: {fecha_produccion}")
-                        print(f"HORA PRODUCCIÓN: {hora_produccion}")
-                        print(f"SSCC: {sscc}")
-                        print(f"TURNO: {turno_test}")
-                        print("-" * 50)
+                        logging.info(f"EAN: {ean}")
+                        logging.info(f"LOTE: {etiquetas_detectadas[ean].get('batchNumber')}")
+                        logging.info(f"FECHA CONSUMO: {fecha_consumo}")
+                        logging.info(f"FECHA PRODUCCIÓN: {fecha_produccion}")
+                        logging.info(f"HORA PRODUCCIÓN: {hora_produccion}")
+                        logging.info(f"SSCC: {sscc}")
+                        logging.info(f"TURNO: {turno_test}")
+                        logging.info(f"EMPLEADO: {employeeNumber}")
+                        logging.info("-" * 50)
 
                         # Guardar palet en BD
-                        save_palet_db(
+                        scan_palet(
                             ean=ean,
                             batchNumber=etiquetas_detectadas[ean].get("batchNumber"),
                             productUseByDate=fecha_consumo,
                             packagingDate=fecha_produccion,
                             time=hora_produccion,
                             sscc=sscc,
-                            employeeNumber=EMPLOYEE_NUMBER
+                            employeeNumber=employeeNumber
                         )
 
                     # Resetear datos para la siguiente etiqueta
@@ -228,12 +209,12 @@ def start_scanner(employeeNumber):
     cv2.destroyAllWindows()
 
     # Resumen final
-    print("\n=== RESUMEN DE CÓDIGOS ESCANEADOS ===")
-    print(f"Total de códigos diferentes: {len(unique_codes_for_summary)}")
-    print("-" * 50)
+    logging.info("=== RESUMEN DE CÓDIGOS ESCANEADOS ===")
+    logging.info(f"Total de códigos diferentes: {len(unique_codes_for_summary)}")
+    logging.info("-" * 50)
     for i, (codigo, info) in enumerate(unique_codes_for_summary.items(), 1):
-        print(f"Código #{i}:")
-        print(f"  Valor: {codigo}")
-        print(f"  Tipo: {info['tipo']} ({info['descripcion_tipo']})")
-        print(f"  Fecha y hora: {info['fecha_escaneo']}")
-        print("-" * 50)
+        logging.info(f"Código #{i}:")
+        logging.info(f"  Valor: {codigo}")
+        logging.info(f"  Tipo: {info['tipo']} ({info['descripcion_tipo']})")
+        logging.info(f"  Fecha y hora: {info['fecha_escaneo']}")
+        logging.info("-" * 50)

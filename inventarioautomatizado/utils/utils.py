@@ -1,5 +1,4 @@
 from enum import Enum
-from datetime import datetime
 
 class Shift(Enum):
     MORNING = "MORNING" # 6:00 - 14:00
