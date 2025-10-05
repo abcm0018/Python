@@ -184,7 +184,7 @@ def start_scanner(employeeNumber):
                             batchNumber=etiquetas_detectadas[ean].get("batchNumber"),
                             productUseByDate=fecha_consumo,
                             packagingDate=fecha_produccion,
-                            time=hora_produccion,
+                            productionTime=hora_produccion,
                             sscc=sscc,
                             employeeNumber=employeeNumber
                         )

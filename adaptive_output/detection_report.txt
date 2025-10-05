@@ -1,0 +1,5 @@
+=== REPORTE DE DETECCIÓN ADAPTIVE THRESHOLD ===
+
+Regiones encontradas: 0
+ROIs extraídos: 0
+

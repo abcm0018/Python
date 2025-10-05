@@ -11,7 +11,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-def save_palet_db(ean, batchNumber, productUseByDate, packagingDate, time, sscc, employeeNumber):
+def save_palet_db(ean, batchNumber, productUseByDate, packagingDate, productionTime, sscc, employeeNumber):
     conn = None
     cursor = None
     try:
@@ -33,19 +33,18 @@ def save_palet_db(ean, batchNumber, productUseByDate, packagingDate, time, sscc,
             return {"success": False, "error": f"Producto EAN {ean} no encontrado"}
         product_id = row[0]
         
-        # Buscar el usuario por employee_number
-        cursor.execute("SELECT id FROM USER WHERE employee_number = %s", (employeeNumber,))
+        # Validar que el usuario existe por employee_number
+        cursor.execute("SELECT 1 FROM USER WHERE employee_number = %s", (employeeNumber,))
         row = cursor.fetchone()
-        user_id = row[0] if row else None
-
-        if not user_id:
+       
+        if not row:
             logging.warning(f"⚠️ No se encontró el usuario con número de empleado {employeeNumber}. El palet no se insertará.")
             return {"success": False, "error": f"Usuario {employeeNumber} no encontrado"}
 
         # Formatear fechas y hora
         productUseByDate_sql = formatear_fecha_gs1_a_java(productUseByDate)
         packagingDate_sql = formatear_fecha_gs1_a_java(packagingDate)
-        time_sql = formatear_hora_gs1_a_java(time)
+        time_sql = formatear_hora_gs1_a_java(productionTime)
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # Obtener el turno de trabajo
@@ -53,10 +52,10 @@ def save_palet_db(ean, batchNumber, productUseByDate, packagingDate, time, sscc,
 
         # Insertar palet en la bd
         sql = """
-        INSERT INTO PALET (ean, batch_number, packaging_date, product_use_by_date, time, sscc, created_at, shift, product_id, user_id)
+        INSERT INTO PALET (ean, batch_number, packaging_date, product_use_by_date, production_time, sscc, created_at, shift, product_id, employee_number)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
-        values = (ean, batchNumber, packagingDate_sql, productUseByDate_sql, time_sql, sscc, created_at, shift, product_id, user_id)
+        values = (ean, batchNumber, packagingDate_sql, productUseByDate_sql, time_sql, sscc, created_at, shift, product_id, employeeNumber)
 
         cursor.execute(sql, values)
         conn.commit()

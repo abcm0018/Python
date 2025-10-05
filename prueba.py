@@ -1,406 +1,169 @@
 import cv2
 import numpy as np
+import matplotlib.pyplot as plt
 from pyzbar.pyzbar import decode
-import datetime
-from collections import defaultdict
-import requests
-import json
-from datetime import datetime
 
-# API de Spring Boot para guardar datos de códigos de barras
-SPRING_BOOT_URL = "http://localhost:8080/api/codigos"
-SPRING_BOOT_PALET_URL = "http://localhost:8080/api/v1/palets"
+# --- Cargar imagen ---
+img = cv2.imread("etiqueta.jpg")
+img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # para mostrar con matplotlib
+gray_full = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
 
-# Función para enviar datos a Spring Boot
-def save_barcode(valor, tipo, descripcion_tipo, fecha_escaneo):
-    headers = {"Content-Type": "application/json"}
-    datos = {
-        "valor": valor,
-        "tipo": tipo,
-        "descripcionTipo": descripcion_tipo,
-        "fechaEscaneo": fecha_escaneo
-    }
-    try:
-        response = requests.post(SPRING_BOOT_URL, data=json.dumps(datos), headers=headers)
-        if response.status_code in (200, 201):
-            print("✅ Código enviado exitosamente a Spring Boot")
-        else:
-            print(f"❌ Error al enviar código a Spring Boot: {response.status_code}")
-            print(f"Respuesta: {response.text}")
-    except Exception as e:
-        print(f"⚠️ Excepción al intentar enviar el código: {e}")
+# --- Buscar la etiqueta grande (tu heurística previa) ---
+_, thresh = cv2.threshold(gray_full, 200, 255, cv2.THRESH_BINARY_INV)
+contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
-def formatear_fecha_gs1_a_java(fecha_gs1):
-    """Convierte fecha GS1 (YYMMDD) a formato Java yyyy-MM-dd"""
-    if fecha_gs1 and len(fecha_gs1) == 6:
-        year = int(fecha_gs1[0:2])
-        # Determinar el siglo (asumimos 20YY para años < 50, 19YY para >= 50)
-        if year < 50:
-            year += 2000
-        else:
-            year += 1900
-        month = int(fecha_gs1[2:4])
-        day = int(fecha_gs1[4:6])
-        # Validar componentes de la fecha
-        if 1 <= month <= 12 and 1 <= day <= 31:
-            return f"{year}-{month:02d}-{day:02d}"
-    return None
+codigo_roi = None
+etiqueta_roi = None
 
-def formatear_hora_gs1_a_java(hora_gs1):
-    """Convierte hora GS1 (HHMM) a formato Java HH:mm:ss"""
-    if hora_gs1 and len(hora_gs1) == 4:
-        hour = int(hora_gs1[0:2])
-        minute = int(hora_gs1[2:4])
-        # Validar hora y minutos
-        if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return f"{hour:02d}:{minute:02d}:00"
-    return None
-
-def save_palet(ean, batchNumber, expirationDate, productionDate, time, sscc):
-    headers = {"Content-Type": "application/json"}
-    
-    # Convertir los formatos de fecha y hora a formato Java compatible
-    expirationDate_java = formatear_fecha_gs1_a_java(expirationDate)
-    productionDate_java = formatear_fecha_gs1_a_java(productionDate)
-    time_java = formatear_hora_gs1_a_java(time)
-    
-    payload = {
-        "ean": ean,
-        "batchNumber": batchNumber,
-        "expirationDate": expirationDate_java,  # Formato yyyy-MM-dd para java.sql.Date
-        "productionDate": productionDate_java,  # Formato yyyy-MM-dd para java.sql.Date
-        "time": time_java,  # Formato HH:mm:ss para java.sql.Time
-        "sscc": sscc,
-        "createdAt": datetime.now().replace(microsecond=0).isoformat()
-    }
-
-    print("Payload a enviar a Spring Boot:")
-    print(json.dumps(payload, indent=4))
-    try:
-        response = requests.post(SPRING_BOOT_PALET_URL, json=payload, headers=headers)
-        if response.status_code in (200, 201):
-            print("✅ Palet enviado correctamente.")
-        elif response.status_code == 400:
-            print("❌ Error de validación:", response.text)
-        elif response.status_code == 409:
-            print("⚠️ Palet duplicado:", response.text)
-        else:
-            print(f"❌ Error inesperado ({response.status_code}):", response.text)
-    except requests.exceptions.RequestException as e:
-        print("🚨 Error al conectar con Spring Boot:", str(e))
-
-
-# Captura de video
-cap = cv2.VideoCapture(0)
-#cap = cv2.VideoCapture(1)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-cv2.namedWindow("Escáner", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("Escáner", 1280, 720)
-
-# Diccionario para evitar duplicados y guardar información adicional
-seen_barcodes = {}
-# Diccionario para acumular datos por EAN
-etiquetas_detectadas = defaultdict(dict)
-# Diccionario para almacenar datos de la etiqueta actual
-label_data = {
-    "ean": None,
-    "batchNumber": None,
-    "expirationDate": None,
-    "productionDate": None,
-    "time": None,
-    "sscc": None
-}
-
-# Diccionario con descripción de los tipos de códigos
-TIPOS_CODIGOS = {
-    "QRCODE": "Código QR",
-    "CODE128": "Code 128",
-    "CODE39": "Code 39",
-    "EAN13": "EAN-13",
-    "EAN8": "EAN-8",
-    "UPCA": "UPC-A",
-    "UPCE": "UPC-E",
-    "PDF417": "PDF417",
-    "DATAMATRIX": "DataMatrix",
-    "ITF": "ITF (Interleaved 2 of 5)",
-    "AZTEC": "Aztec",
-    "CODABAR": "Codabar"
-}
-
-# Definición de identificadores de aplicación (AI) según estándar GS1
-AIs = {
-    "00": {"nombre": "SSCC", "longitud": 18, "tipo": "sscc"},
-    "01": {"nombre": "EAN", "longitud": 14, "tipo": "ean"},
-    "10": {"nombre": "LOTE", "longitud": -1, "tipo": "lote"},  # Longitud variable
-    "15": {"nombre": "FECHA CONSUMO", "longitud": 6, "tipo": "fecha_preferente_consumo"},
-    "17": {"nombre": "FECHA CADUCIDAD", "longitud": 6, "tipo": "fecha_caducidad"},
-    "8008": {"nombre": "FECHA Y HORA PRODUCCIÓN", "longitud": 10, "tipo": "fecha_hora_produccion"}
-}
-
-def procesar_gs1(codigo):
-    """Procesa un código GS1 y extrae información basada en identificadores de aplicación"""
-    i = 0
-    actualizado = False
-    
-    while i < len(codigo):
-        # Buscar identificadores de aplicación al inicio o después de un separadorq
-        ai_encontrado = False
-        
-        # Comprobar AI de 4 dígitos
-        if i + 4 <= len(codigo) and codigo[i:i+4] in AIs:
-            ai = codigo[i:i+4]
-            i += 4
-            ai_encontrado = True
-        # Comprobar AI de 2 dígitos
-        elif i + 2 <= len(codigo) and codigo[i:i+2] in AIs:
-            ai = codigo[i:i+2]
-            i += 2
-            ai_encontrado = True
-            
-        if ai_encontrado:
-            ai_info = AIs[ai]
-            tipo_dato = ai_info["tipo"]
-            
-            # Extraer datos según longitud definida en AI
-            if ai_info["longitud"] > 0:
-                # Longitud fija
-                if i + ai_info["longitud"] <= len(codigo):
-                    valor = codigo[i:i+ai_info["longitud"]]
-                    i += ai_info["longitud"]
-                else:
-                    # Código incompleto, tomar lo que queda
-                    valor = codigo[i:]
-                    i = len(codigo)
-            else:
-                # Longitud variable (buscar siguiente AI o tomar hasta el final)
-                next_ai_pos = float('inf')
-                for siguiente_ai in AIs:
-                    pos = codigo.find(siguiente_ai, i)
-                    if pos > i and pos < next_ai_pos:
-                        next_ai_pos = pos
-                
-                if next_ai_pos < float('inf'):
-                    valor = codigo[i:next_ai_pos]
-                    i = next_ai_pos
-                else:
-                    valor = codigo[i:]
-                    i = len(codigo)
-            
-            # Guardar valores según el tipo
-            if tipo_dato == "sscc" and label_data["sscc"] is None:
-                label_data["sscc"] = valor
-                print(f"✓ SSCC detectado: {valor}")
-                actualizado = True
-                
-            elif tipo_dato == "ean" and label_data["ean"] is None:
-                label_data["ean"] = valor
-                print(f"✓ EAN detectado: {valor}")
-                actualizado = True
-                
-            elif tipo_dato == "lote" and label_data["batchNumber"] is None:
-                label_data["batchNumber"] = valor
-                print(f"✓ Lote detectado: {valor}")
-                actualizado = True
-                
-            elif tipo_dato == "fecha_preferente_consumo" and label_data["expirationDate"] is None:
-                label_data["expirationDate"] = valor
-                print(f"✓ Fecha preferente consumo: {valor}")
-                print(f"✓ Fecha en formato Java: {formatear_fecha_gs1_a_java(valor)}")
-                actualizado = True
-                
-            elif tipo_dato == "fecha_hora_produccion":
-                if len(valor) >= 10:
-                    if label_data["productionDate"] is None:
-                        fecha_prod = valor[:6]
-                        label_data["productionDate"] = fecha_prod
-                        print(f"✓ Fecha producción: {fecha_prod}")
-                        print(f"✓ Fecha producción en formato Java: {formatear_fecha_gs1_a_java(fecha_prod)}")
-                        actualizado = True
-                    
-                    if label_data["time"] is None and len(valor) >= 10:
-                        hora_prod = valor[6:10]
-                        label_data["time"] = hora_prod
-                        print(f"✓ Hora producción: {hora_prod}")
-                        print(f"✓ Hora producción en formato Java: {formatear_hora_gs1_a_java(hora_prod)}")
-                        actualizado = True
-        else:
-            # Si no se encuentra un AI, avanzar un carácter
-            i += 1
-            
-    return actualizado
-
-def consolidar_datos(ean, nuevos_datos):
-    """Acumula datos para un EAN específico"""
-    if ean:
-        for key, value in nuevos_datos.items():
-            if value is not None and key != 'ean':  # No sobreescribir el EAN
-                etiquetas_detectadas[ean][key] = value
-
-def obtener_descripcion_tipo(tipo_codigo):
-    """Obtiene una descripción legible del tipo de código"""
-    return TIPOS_CODIGOS.get(tipo_codigo, tipo_codigo)
-
-# Almacenar códigos únicos para el resumen final
-unique_codes_for_summary = {}
-
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
-    
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    barcodes = decode(gray)
-    
-    for barcode in barcodes:
-        data = barcode.data.decode('utf-8')
-        barcode_type = barcode.type
-        
-        if data not in seen_barcodes:
-            # Guardar información del código con timestamp
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            seen_barcodes[data] = {
-                'tipo': barcode_type,
-                'fecha_escaneo': timestamp,
-                'descripcion_tipo': obtener_descripcion_tipo(barcode_type)
-            }
-
-            # Nuevo código → enviar al backend
-            save_barcode(
-                valor=data,
-                tipo=barcode_type,
-                descripcion_tipo=obtener_descripcion_tipo(barcode_type),
-                fecha_escaneo=timestamp
-            )
-            
-            # También guardar en la lista para resumen final sin duplicados
-            unique_codes_for_summary[data] = {
-                'tipo': barcode_type,
-                'fecha_escaneo': timestamp,
-                'descripcion_tipo': obtener_descripcion_tipo(barcode_type)
-            }
-            
-            print(f"\nNuevo código detectado: {data}")
-            print(f"Tipo: {barcode_type} ({obtener_descripcion_tipo(barcode_type)})")
-            print(f"Fecha y hora: {timestamp}")
-            
-            # Procesar el código siguiendo el estándar GS1
-            procesar_gs1(data)
-            
-            # Mostrar el estado de label_data
-            print("Estado actual de datos capturados:")
-            for key, value in label_data.items():
-                estado = "✓" if value else "❌"
-                print(f"{key}: {estado} {value if value else ''}")
-            
-            # Si todos los datos importantes han sido capturados o se ha detectado un EAN
-            if label_data["ean"] is not None:
-                ean = label_data["ean"]
-                # Acumular datos para este EAN
-                consolidar_datos(ean, label_data)
-                
-                # Verificar si la etiqueta está completa
-                datos_requeridos = ["ean", "batchNumber", "expirationDate", "productionDate", "time"]
-                completado = all(key in etiquetas_detectadas[ean] or (key == "ean" and ean) for key in datos_requeridos)
-                
-                if completado:
-                    print(f"\n=== PALET {ean} COMPLETO ===")
-                    
-                    # Mostrar datos originales y convertidos 
-                    fecha_consumo = etiquetas_detectadas[ean].get("expirationDate")
-                    fecha_consumo_java = formatear_fecha_gs1_a_java(fecha_consumo)
-                    
-                    fecha_produccion = etiquetas_detectadas[ean].get("productionDate")
-                    fecha_produccion_java = formatear_fecha_gs1_a_java(fecha_produccion)
-                    
-                    hora_produccion = etiquetas_detectadas[ean].get("time")
-                    hora_produccion_java = formatear_hora_gs1_a_java(hora_produccion)
-                    
-                    print(f"EAN: {ean}")
-                    print(f"LOTE: {etiquetas_detectadas[ean].get('batchNumber')}")
-                    print(f"FECHA CONSUMO (GS1): {fecha_consumo} → JAVA: {fecha_consumo_java}")
-                    print(f"FECHA PRODUCCIÓN (GS1): {fecha_produccion} → JAVA: {fecha_produccion_java}")
-                    print(f"HORA PRODUCCIÓN (GS1): {hora_produccion} → JAVA: {hora_produccion_java}")
-                    print(f"SSCC: {etiquetas_detectadas[ean].get('sscc')}")
-                    print("-" * 50)
-                    
-                    # Llamar a la función para guardar en Spring Boot
-                    save_palet(
-                        ean=ean,
-                        batchNumber=etiquetas_detectadas[ean].get("batchNumber"),
-                        expirationDate=fecha_consumo,
-                        productionDate=fecha_produccion,
-                        time=hora_produccion,
-                        sscc=etiquetas_detectadas[ean].get("sscc")
-                    )
-
-                # Reiniciar para la siguiente captura
-                label_data = {"ean": None, "batchNumber": None, "expirationDate": None, "productionDate": None, "time": None, "sscc": None}
-        
-        # Dibujar rectángulo y texto en la imagen
-        x, y, w, h = barcode.rect
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        
-        # Mostrar información del código en la imagen
-        barcode_info = seen_barcodes[data]
-        tipo_texto = f"{barcode_info['descripcion_tipo']}"
-        cv2.putText(frame, f"{data}", (x, y - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        cv2.putText(frame, f"Tipo: {tipo_texto}", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        
-    cv2.imshow("Escáner", frame)
-    
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+for cnt in contours:
+    x, y, w, h = cv2.boundingRect(cnt)
+    if w > 500 and h > 500:
+        etiqueta_roi = img[y:y+h, x:x+w].copy()
+        # recorte relativo dentro de la etiqueta (ajusta si hace falta)
+        y1 = int(0.345 * h)
+        y2 = int(0.765 * h)
+        codigo_roi = etiqueta_roi[y1:y2, :].copy()
         break
 
-# Filtrar solo etiquetas completas para el resumen final
-etiquetas_completas = {}
-for ean, datos in etiquetas_detectadas.items():
-    datos_requeridos = ["ean", "expirationDate", "productionDate", "time"]
-    # Verificar que todos los campos requeridos existen
-    if all(key in datos or (key == "ean" and ean) for key in datos_requeridos):
-        # Añadir el EAN al diccionario para la salida final
-        datos["ean"] = ean
-        etiquetas_completas[ean] = datos
+if codigo_roi is None:
+    raise RuntimeError("No se encontró la ROI de la etiqueta (ajusta el umbral / tamaños).")
 
-# Mostrar resumen de todos los códigos escaneados (sin duplicados)
-print("\n=== RESUMEN DE CÓDIGOS ESCANEADOS ===")
-print(f"Total de códigos diferentes: {len(unique_codes_for_summary)}")
-print("-" * 50)
+# --- Preprocesado principal (uso adaptative como base) ---
+gray_roi = cv2.cvtColor(codigo_roi, cv2.COLOR_RGB2GRAY)
+adapt = cv2.adaptiveThreshold(gray_roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                             cv2.THRESH_BINARY, 21, 10)
+adapt_inv = cv2.bitwise_not(adapt)
+eq = cv2.equalizeHist(gray_roi)
 
-for i, (codigo, info) in enumerate(unique_codes_for_summary.items(), 1):
-    print(f"Código #{i}:")
-    print(f"  Valor: {codigo}")
-    print(f"  Tipo: {info['tipo']} ({info['descripcion_tipo']})")
-    print(f"  Fecha y hora: {info['fecha_escaneo']}")
-    print("-" * 50)
+# *** NUEVO: copia del adaptive en color para dibujar resultados ***
+out = cv2.cvtColor(adapt, cv2.COLOR_GRAY2BGR)
 
-# Mostrar resumen de etiquetas detectadas (solo las completas, sin duplicados)
-print("\n=== RESUMEN DE ETIQUETAS COMPLETAS ===")
-etiquetas_unicas = {}
-for ean, datos in etiquetas_completas.items():
-    # Usar el EAN como clave para evitar duplicados
-    if ean not in etiquetas_unicas:
-        etiquetas_unicas[ean] = datos
+# Hacemos detección SOLO en estas variantes
+imagenes_a_probar = [adapt, adapt_inv, gray_roi, eq]
 
-for i, (ean, datos) in enumerate(etiquetas_unicas.items(), 1):
-    print(f"Etiqueta #{i}:")
-    
-    # Obtener y formatear datos para la visualización
-    fecha_consumo = datos.get("expirationDate")
-    fecha_consumo_java = formatear_fecha_gs1_a_java(fecha_consumo)
-    
-    fecha_produccion = datos.get("productionDate")
-    fecha_produccion_java = formatear_fecha_gs1_a_java(fecha_produccion)
-    
-    hora_produccion = datos.get("time")
-    hora_produccion_java = formatear_hora_gs1_a_java(hora_produccion)
-    
-    print(f"  EAN: {ean}")
-    print(f"  LOTE: {datos.get('batchNumber')}")
-    print(f"FECHA CONSUMO (GS1): {fecha_consumo} → JAVA: {fecha_consumo_java}")
-    print(f"FECHA PRODUCCIÓN (GS1): {fecha_produccion} → JAVA: {fecha_produccion_java}")
-    print(f"HORA PRODUCCIÓN (GS1): {hora_produccion} → JAVA: {hora_produccion_java}")
-    print("-" * 50)
+# --- Utilidades: IoU y duplicado ---
+def iou(b1, b2):
+    x1, y1, w1, h1 = b1
+    x2, y2, w2, h2 = b2
+    xa = max(x1, x2)
+    ya = max(y1, y2)
+    xb = min(x1 + w1, x2 + w2)
+    yb = min(y1 + h1, y2 + h2)
+    inter_w = max(0, xb - xa)
+    inter_h = max(0, yb - ya)
+    inter = inter_w * inter_h
+    union = w1 * h1 + w2 * h2 - inter
+    return inter / union if union > 0 else 0
 
-cap.release()
-cv2.destroyAllWindows()
+def es_duplicado(texto, bbox, existentes, iou_thresh=0.25):
+    for e in existentes:
+        if e['text'] == texto:
+            return True
+        if iou(bbox, e['bbox']) > iou_thresh:
+            return True
+    return False
+
+detections = []
+
+# --- 1) Pyzbar sobre variantes ---
+for variante in imagenes_a_probar:
+    decoded = decode(variante)
+    for obj in decoded:
+        texto = obj.data.decode("utf-8")
+        (px, py, pw, ph) = obj.rect
+        bbox = (int(px), int(py), int(pw), int(ph))
+        if not es_duplicado(texto, bbox, detections):
+            detections.append({'text': texto, 'bbox': bbox, 'source': 'pyzbar'})
+            print("Detectado (Pyzbar):", texto)
+
+# --- 2) Detección vertical (tu mismo código) ---
+h_roi, w_roi = gray_roi.shape
+kernel_height = max(10, int(h_roi * 0.12))
+vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, kernel_height))
+inv = cv2.bitwise_not(adapt)
+vertical_mask = cv2.morphologyEx(inv, cv2.MORPH_OPEN, vertical_kernel, iterations=1)
+vertical_mask = cv2.morphologyEx(vertical_mask, cv2.MORPH_CLOSE, vertical_kernel, iterations=1)
+cnts_v, _ = cv2.findContours(vertical_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+for cnt in cnts_v:
+    x, y, w, h = cv2.boundingRect(cnt)
+    if h > 0.45 * h_roi and w < 0.35 * w_roi and h > 40 and w > 10:
+        pad_x = int(w * 0.12)
+        pad_y = int(h * 0.05)
+        x0 = max(0, x - pad_x)
+        y0 = max(0, y - pad_y)
+        x1 = min(w_roi, x + w + pad_x)
+        y1 = min(h_roi, y + h + pad_y)
+        crop = codigo_roi[y0:y1, x0:x1].copy()
+
+        textos_encontrados = set()
+        crop_gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+        crop_adapt = cv2.adaptiveThreshold(crop_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                           cv2.THRESH_BINARY, 21, 10)
+        for prueba in [crop_adapt, cv2.bitwise_not(crop_adapt), crop_gray]:
+            decoded = decode(prueba)
+            for obj in decoded:
+                textos_encontrados.add(obj.data.decode("utf-8"))
+
+        crop_rot = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
+        crop_rot_gray = cv2.cvtColor(crop_rot, cv2.COLOR_RGB2GRAY)
+        crop_rot_adapt = cv2.adaptiveThreshold(crop_rot_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                               cv2.THRESH_BINARY, 21, 10)
+        for prueba in [crop_rot_adapt, cv2.bitwise_not(crop_rot_adapt), crop_rot_gray]:
+            decoded = decode(prueba)
+            for obj in decoded:
+                textos_encontrados.add(obj.data.decode("utf-8"))
+
+        for txt in textos_encontrados:
+            bbox_global = (int(x0), int(y0), int(x1 - x0), int(y1 - y0))
+            if not es_duplicado(txt, bbox_global, detections):
+                detections.append({'text': txt, 'bbox': bbox_global, 'source': 'vertical'})
+                print("Detectado (vertical):", txt)
+
+# --- 3) Complemento OpenCV BarcodeDetector ---
+try:
+    detector = cv2.barcode_BarcodeDetector()
+    ok, decoded_infos, decoded_points, _ = detector.detectAndDecodeMulti(adapt)
+    if ok and decoded_infos is not None:
+        for txt, pts in zip(decoded_infos, decoded_points):
+            if not txt:
+                continue
+            pts = np.array(pts).astype(int)
+            x_min = int(np.min(pts[:, 0]))
+            y_min = int(np.min(pts[:, 1]))
+            x_max = int(np.max(pts[:, 0]))
+            y_max = int(np.max(pts[:, 1]))
+            bbox = (x_min, y_min, x_max - x_min, y_max - y_min)
+            if not es_duplicado(txt, bbox, detections):
+                detections.append({'text': txt, 'bbox': bbox, 'source': 'opencv'})
+                print("Detectado (OpenCV):", txt)
+except Exception:
+    pass
+
+
+# --- Dibujar resultados (ahora en 'out' que es adapt_color) ---
+for i, d in enumerate(detections, start=1):
+    x, y, w, h = d['bbox']
+    source = d['source']
+    color = (0, 255, 0)       # pyzbar -> verde
+    if source == 'opencv':
+        color = (255, 0, 255) # magenta
+    if source == 'vertical':
+        color = (0, 0, 255)   # azul/rojo
+    cv2.rectangle(out, (x, y), (x + w, y + h), color, 2)
+    cv2.putText(out, f"{i}", (x + 4, y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+# Mostrar resultados
+plt.figure(figsize=(14,7))
+plt.title("Códigos detectados en ROI adaptive (con rectángulos)")
+plt.imshow(out)
+plt.axis('off')
+plt.show()
+
+# Lista final única
+codigos_unicos = []
+for d in detections:
+    if d['text'] not in codigos_unicos:
+        codigos_unicos.append(d['text'])
+print("Códigos únicos encontrados:", codigos_unicos)

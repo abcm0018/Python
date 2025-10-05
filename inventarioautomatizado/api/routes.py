@@ -1,15 +1,20 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from api.auth import login_user, get_current_user
 from api.palets import scan_palet
-from inventarioautomatizado.api.users import get_all_users_service
-
-import logging
+from api.timesheet import save_signing, save_check_out
 
 router = APIRouter()
 
 @router.post("/login")
 def login(employee_number: str, password: str):
-    return login_user(employee_number, password)
+    user_data = login_user(employee_number, password)
+
+    user = user_data["user"]
+
+    if user.get("role", "").lower() == "operator":
+        save_signing(user["employee_number"], user["name"])
+
+    return user_data
 
 @router.post("/palets/scan")
 def scan(
@@ -23,12 +28,7 @@ def scan(
 ):
     return scan_palet(ean, batchNumber, productUseByDate, packagingDate, time, sscc, employee_number)
 
-@router.get("/users/public")
-def get_all_users_public():
-    return get_all_users_service()
-
-# Protegido: requiere login (token)
-@router.get("/users")
-def get_all_users_protected(employee_number: str = Depends(get_current_user)):
-    logging.info(f"Usuario autenticado {employee_number} listó los usuarios")
-    return get_all_users_service()
+@router.post("/logout")
+def logout_route(employee_number: str):
+    save_check_out(employee_number)
+    return {"message": "Logout registrado correctamente"}
